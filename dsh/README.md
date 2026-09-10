@@ -8,12 +8,11 @@
 
 只呈现基础调用事实与呼吸轨迹，别无他物。
 
-[![版本](docs/images/badges/version.svg)](https://github.com/brittanistrehlowll-oss/whale-breath/releases/tag/V1.0.4)
-[![许可证](docs/images/badges/license.svg)](LICENSE)
-[![DSH](docs/images/badges/dsh.svg)](https://github.com/anywhere-labs/dsh-desktop)
-[![测试](docs/images/badges/tests.svg)](#-测试)
+[![版本](https://img.shields.io/badge/版本-V1.0.2_Pure_Breath-002FA7?style=for-the-badge&labelColor=gray)](https://github.com/brittanistrehlowll-oss/whale-breath/releases/tag/V1.0.2)
+[![许可证](https://img.shields.io/badge/许可证-MIT-2E8B57?style=for-the-badge&labelColor=gray)](LICENSE)
+[![DSH](https://img.shields.io/badge/DSH-0.1.x-000000?style=for-the-badge&labelColor=gray)](https://github.com/anywhere-labs/dsh-desktop)
+[![测试](https://img.shields.io/badge/测试-220%2F220_通过-07C160?style=for-the-badge&labelColor=gray)](#-测试)
 [![CI](https://github.com/brittanistrehlowll-oss/whale-breath/actions/workflows/test.yml/badge.svg)](https://github.com/brittanistrehlowll-oss/whale-breath/actions/workflows/test.yml)
-[![Node](docs/images/badges/node.svg)](#-测试)
 
 [实机界面](#-实机界面) · [特性](#-特性一览) · [呼吸语言](#-呼吸语言) · [快速开始](#-快速开始) · [架构](#-架构) · [测试](#-测试) · [路线图](#-路线图)
 
@@ -31,26 +30,21 @@
 - **V1.0.1 Pure Breath**：剥离计费/额度与中间面板，界面只剩事实与轨迹。
 - **V1.0.2 可靠修复版**：安装/更新脚本重写（装得上、可回滚）、会话切换不再卡死、
   刷新不再闪清、后端默认只读、CI 上线。
-- **V1.0.3 视觉优化版**：空态破版与顶栏孤字修复、事故 token 归零、事实卡按
-  「节奏 → 量级 → 健康」重排、文案全面中文化打磨（多专家评审驱动）。
-- **V1.0.4 设计体系版**：像素级细节精炼（间距/字阶/焦点反馈归位）、
-  《[鲸息设计规范](docs/DESIGN.md)》发布、横幅换「呼吸曲线」极简意象。
 
 ## 🖼️ 实机界面
 
-以下截图均来自 DSH 实机运行（1440×1000），未做任何修饰；曲线为一次真实会话的实测轨迹。
+以下截图均来自 DSH web 实机运行（1440×1000），未做任何修饰。
 
 **呼吸轨迹浮层** —— 点开鲸鱼就是这个页面，没有中间层：
 
-<img src="docs/images/breath-surface.png" alt="鲸息呼吸轨迹浮层：五张事实卡与真实呼吸曲线" width="100%">
+<img src="docs/images/breath-surface.png" alt="鲸息呼吸轨迹浮层：五张事实卡与 Breath Curve" width="100%">
 
 | 图中可见 | 说明 |
 | --- | --- |
-| 五张事实卡 | 按「节奏 → 量级 → 健康」排列：会话时长（中文时分秒 + 运行号）、轮次·步数、Token 总量（输入/输出分列）、工具调用、异常/重试；空值自动降级为灰调「—」 |
-| 呼吸曲线 | 一次 10 分 46 秒真实会话的速度轨迹：启动 → 加速 → 巡航 → 工具停顿 → 恢复 → 收束，峰值 328 tok/s，34 次工具事件刻度 |
-| 图例与数据来源 | 「已完成会话 · 40 点 · 56 段」——采样口径如实标注；空态时图例自动降级 |
-| 顶栏 | 线程状态与数据来源、最近速度、缓存命中率、「自动刷新 · Ns」节拍 |
-| Event Rail | 当前轮摘要：工具调用 34 次（非子代理） · 累计 2 轮 |
+| 五张事实卡 | Token 总量、会话时长（附真实运行 ID）、轮次/步数、当前 Turn 工具次数、异常/重试 |
+| Breath Curve 区 | 速度曲线 + 事件刻度 + 图例；采样不足时展示**真实空态文案**而非伪造曲线 |
+| 空态文案 | 「不会混用最近 Turn 的曲线」——fail-closed 不是口号，是界面默认行为 |
+| 顶栏 | 线程状态、速度、Cache 命中率、自动刷新节拍（5s） |
 
 **侧栏鲸鱼入口** —— rail 收起态常驻，wide 展开态附带线程状态与 tok/s：
 
@@ -136,8 +130,7 @@ docs/images/    README 用图（横幅、实机截图）
 ```
 
 **设计原则**：fail-closed（缺数据宁空不假）；Cache First（事实卡优先读缓存投影）；
-Native by default（视觉归属感交给宿主）。完整设计规范见 **[docs/DESIGN.md](docs/DESIGN.md)**
-（色彩/字阶/间距圆角/组件解剖/图标规则/动效/空态规范/反模式档案）。
+Native by default（视觉归属感交给宿主）。
 
 ## 🧪 测试
 
@@ -153,8 +146,6 @@ CLI home 与 Desktop harness home 两种部署形态均同步验证通过。
 
 - [x] **V1.0.1 Pure Breath** —— 剥离计费/额度，侧栏入口直达呼吸轨迹
 - [x] **V1.0.2 可靠修复版** —— 安装/更新重写、会话切换修复、刷新状态机、后端默认只读、CI
-- [x] **V1.0.3 视觉优化版** —— 空态/顶栏破版修复、事故 token 归零、事实卡重排、文案中文打磨
-- [x] **V1.0.4 设计体系版** —— 像素级精炼、《鲸息设计规范》发布、「呼吸曲线」横幅
 - [ ] 受控更新通道（`jingxiOps` 已预留开关）
 - [ ] Perfect Breath 分享（share 层已预留）
 - [ ] 更多轨迹解读维度
@@ -174,14 +165,3 @@ DSH Desktop 社区——鲸息运行在它们的肩膀之上。
 <sub>🐋 呼吸之间，事实自现。</sub>
 
 </div>
-
----
-
-## PGG 整合（2026-09-10）
-
-本 fork 在保留上游完整历史的前提下，整合了 PGG 侧的两部分：
-
-- **`pi/`** — Pi 原生等价实现（`pi/extensions/pgg-jingxi.ts` 扩展 + `pi/web/components/` 呼吸面板 + `pi/web/app/api/jingxi/` 只读接口），供 Pi agent 宿主使用。
-- **`dsh/`** — DeepSeek Harness (DSH) 原插件 V1.0.2 的归档副本（原样保存，含 `lib/`、`assets/icons/`、`test/`）。
-
-两者与上游 `lib/`（DSH 当前版本）并存，互不覆盖。
