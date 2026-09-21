@@ -21,7 +21,9 @@ import {
   getDshUpdateVerification,
   isLifecycleAction,
   readDshRuntimeHealth,
+  readInstalledDshVersion,
   requestDshRestart,
+  resolveDshRoot,
   isTrustedWebRequest,
   updateDecision,
 } from '../lib/dsh-update.js'
@@ -413,6 +415,65 @@ test('runtime health evidence requires a ready response with a boot id', async (
   })
   assert.equal(unverified.ok, false)
   assert.equal(unverified.state, 'runtime-unverified')
+})
+
+test('an absent or gated health route falls back to the plugin status route', async () => {
+  const seen = []
+  const fallbackUrl = 'http://127.0.0.1:3080/api/jingxi/status'
+  const healthyFallback = { ok: true, status: 200, text: async () => JSON.stringify({ ok: true, ready: true, bootId: 'jingxi-boot' }) }
+  const fetchImpl = async (url) => {
+    seen.push(String(url))
+    return String(url) === fallbackUrl
+      ? healthyFallback
+      : { ok: false, status: 404, text: async () => 'not found' }
+  }
+
+  const absent = await readDshRuntimeHealth({ fetchImpl, url: 'http://127.0.0.1:3080/api/system/health', fallbackUrl })
+  assert.equal(absent.ok, true)
+  assert.equal(absent.state, 'runtime-healthy')
+  assert.equal(absent.bootId, 'jingxi-boot')
+  assert.equal(absent.fallback, true)
+  assert.deepEqual(seen, ['http://127.0.0.1:3080/api/system/health', fallbackUrl])
+
+  // The gateway answers 401 for /api routes a caller is not admitted to; that
+  // is also an unusable contract route, not proof the host is down.
+  const gated = await readDshRuntimeHealth({
+    fetchImpl: async (url) => String(url) === fallbackUrl
+      ? healthyFallback
+      : { ok: false, status: 401, text: async () => 'unauthorized' },
+    url: 'http://127.0.0.1:3080/api/system/health',
+    fallbackUrl,
+  })
+  assert.equal(gated.ok, true)
+  assert.equal(gated.bootId, 'jingxi-boot')
+
+  // A host that is genuinely down must not be reported healthy by fallback.
+  const down = await readDshRuntimeHealth({
+    fetchImpl: async () => { throw new Error('ECONNREFUSED') },
+    url: 'http://127.0.0.1:3080/api/system/health',
+    fallbackUrl,
+  })
+  assert.equal(down.ok, false)
+  assert.equal(down.state, 'runtime-unverified')
+})
+
+test('a source checkout resolves its DSH version from the apps workspace member', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-jingxi-checkout-'))
+  try {
+    // A checkout publishes DSH from a workspace member; the root manifest
+    // carries no `@deepseek-ai/dsh` dependency to read.
+    await writeFile(join(root, 'pnpm-workspace.yaml'), 'packages:\n  - apps/*\n')
+    await writeFile(join(root, 'package.json'), JSON.stringify({ name: 'dsh-root', private: true }))
+    await mkdir(join(root, 'node_modules'), { recursive: true })
+    await mkdir(join(root, 'apps', 'cli'), { recursive: true })
+    await writeFile(join(root, 'apps', 'cli', 'package.json'), JSON.stringify({ name: '@deepseek-ai/dsh', version: '0.1.6-alpha.2' }))
+
+    const resolved = await resolveDshRoot({ root, cwd: root })
+    assert.equal(resolved, root)
+    assert.equal(await readInstalledDshVersion(resolved), '0.1.6-alpha.2')
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
 })
 
 test('update restart persists a verification record before the watchdog marker', async () => {
