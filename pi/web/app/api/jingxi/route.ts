@@ -21,6 +21,7 @@ export async function GET() {
     return NextResponse.json({
       ok: true,
       schema: payload.schema ?? "pgg-jingxi/breath-latest",
+      version: payload.version,
       updatedAt: payload.updatedAt,
       breathing: {
         turns: payload.turns ?? 0,
@@ -32,6 +33,18 @@ export async function GET() {
         totalOutput: payload.totalOutput ?? 0,
         cost: payload.totalCost ?? 0,
         sessionStartedAt: payload.sessionStartedAt,
+        // 缓存三态（命中率的分母来源）
+        cacheRead: payload.cacheRead ?? 0,
+        cacheWrite: payload.cacheWrite ?? 0,
+        uncachedInput: payload.uncachedInput ?? 0,
+        phase: payload.phase,
+        phaseLabel: payload.phaseLabel,
+        // 解读层派生量（扩展 V1.0.4 起落盘）
+        avgTps: payload.avgTps ?? null,
+        rateQuality: payload.rateQuality ?? "none",
+        rateGrade: payload.rateGrade,
+        rateGradeLabel: payload.rateGradeLabel,
+        cacheHitRate: payload.cacheHitRate ?? null,
       },
       curve: payload.curve ?? [],
       ticks: payload.ticks ?? [],

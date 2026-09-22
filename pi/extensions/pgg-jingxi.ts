@@ -52,6 +52,12 @@ const live = {
   totalInput: 0,            // 累计 input tokens（含 cache）
   totalOutput: 0,           // 累计 output tokens
   totalCost: 0,             // 累计成本（$）
+  cacheRead: 0,             // 累计 cache 读取 tokens
+  cacheWrite: 0,            // 累计 cache 写入 tokens
+  uncachedInput: 0,         // 累计未走 cache 的 input tokens
+  turnStartedAt: 0,         // 当前 Turn 起始时刻（估算轮速用）
+  turnOutputStart: 0,       // 当前 Turn 开始时的 output 基线
+  rates: [] as number[],    // 每轮估算速度（tok/s，元数据）
   curve: [] as CurvePoint[], // 每轮 token 速度点（元数据）
   ticks: [] as Tick[],       // 事件轨（元数据）
   idle: true,
@@ -88,14 +94,87 @@ function addCurvePoint(tokens: number, tMs = Date.now()): void {
 
 // Pi Usage 结构（docs/session-format.md 实查）：
 //   { input, output, cacheRead, cacheWrite, totalTokens, cost: { total, ... } }
-function usageOf(message: any): { input: number; output: number; cost: number } {
+// 缓存三态分开返回：命中率需要「命中 / (命中+未命中+写入)」的分母，
+// 只留合计 input 就把分母丢了，无法回算。
+function usageOf(message: any): {
+  input: number; output: number; cost: number;
+  cacheRead: number; cacheWrite: number; uncached: number;
+} {
   const u = message?.usage;
-  if (!u || typeof u !== "object") return { input: 0, output: 0, cost: 0 };
+  if (!u || typeof u !== "object") {
+    return { input: 0, output: 0, cost: 0, cacheRead: 0, cacheWrite: 0, uncached: 0 };
+  }
+  const cacheRead = NUM(u.cacheRead);
+  const cacheWrite = NUM(u.cacheWrite);
+  const uncached = NUM(u.input);
   return {
-    input: NUM(u.input) + NUM(u.cacheRead) + NUM(u.cacheWrite),
+    input: uncached + cacheRead + cacheWrite,
     output: NUM(u.output),
     cost: NUM(u.cost?.total),
+    cacheRead,
+    cacheWrite,
+    uncached,
   };
+}
+
+// ── 解读层（与 DSH whale-breath V1.0.4 等价的派生量） ──────────────────────
+// 全部由已采集的元数据推导，不新增采集面、不读会话内容。
+
+/** 缓存命中率：命中 / (命中 + 未命中 + 写入)。分母为 0 时返回 undefined。 */
+function cacheHitRate(): number | undefined {
+  const denom = live.cacheRead + live.uncachedInput + live.cacheWrite;
+  if (denom <= 0) return undefined;
+  return live.cacheRead / denom;
+}
+
+/** 速度质量档位：区分「实时」「估算」与「无数据」，绝不把估算标成实时。 */
+export type RateQuality = "exact" | "estimated" | "none";
+function rateQuality(): RateQuality {
+  if (live.rates.length >= 2) return "estimated";
+  return "none";
+}
+
+/** 平均速度（tok/s）：取已结算轮次的速度均值；无样本返回 undefined。 */
+function averageTps(): number | undefined {
+  if (live.rates.length === 0) return undefined;
+  return live.rates.reduce((s, r) => s + r, 0) / live.rates.length;
+}
+
+/** 速度分级：把 tok/s 译成人话（空态/缓流/巡航/涌动/疾涌）。 */
+function rateGrade(tps: number | undefined): { key: string; label: string } {
+  if (tps === undefined || !Number.isFinite(tps) || tps <= 0) return { key: "idle", label: "空态" };
+  if (tps < 10) return { key: "slow", label: "缓流" };
+  if (tps < 30) return { key: "cruise", label: "巡航" };
+  if (tps < 60) return { key: "surge", label: "涌动" };
+  return { key: "rush", label: "疾涌" };
+}
+
+// 六阶段呼吸叙事（与 DSH phaseStoryItems 同一模型：启动/加速/巡航/扰动/收敛/完成）。
+const PHASES = [
+  { key: "ignition", label: "启动", detail: "建立连接，准备上下文。" },
+  { key: "acceleration", label: "加速", detail: "输入涌入，模型开始出词。" },
+  { key: "cruise", label: "巡航", detail: "稳定输出，缓存效率最佳。" },
+  { key: "turbulence", label: "扰动", detail: "工具调用节点，波动增大。" },
+  { key: "landing", label: "收敛", detail: "收敛输出，处理尾部任务。" },
+  { key: "done", label: "完成", detail: "任务完成，资源释放。" },
+] as const;
+
+/** 当前阶段：由真实速度样本、工具节点与运行状态推导（不猜）。 */
+function phaseOf(): { key: string; label: string; detail: string; index: number } {
+  const fallback = PHASES[0];
+  if (!live.idle) {
+    const hasTool = live.turnTools > 0;
+    if (hasTool) return withIndex(PHASES[3]);
+    const n = live.rates.length;
+    if (n >= 3) return withIndex(PHASES[2]);
+    if (n >= 2) return withIndex(PHASES[1]);
+    return withIndex(PHASES[0]);
+  }
+  // 空闲：有轮次即视为收束态，从未跑过则仍是启动态
+  return live.turns > 0 ? withIndex(PHASES[4]) : withIndex(fallback);
+}
+function withIndex(p: (typeof PHASES)[number]): { key: string; label: string; detail: string; index: number } {
+  return { key: p.key, label: p.label, detail: p.detail, index: PHASES.indexOf(p) };
 }
 
 // ── 呼吸视图（五张事实卡 + 曲线 + 事件轨，全为元数据） ────────────────────
@@ -105,6 +184,10 @@ function buildBreathPayload(): string {
   const dur = now - live.sessionStartedAt;
   const tps = dur > 0 ? Math.round(live.totalOutput / (dur / 1000)) : 0;
   const lines = buildBreathLines();
+  const avg = averageTps();
+  const grade = rateGrade(avg);
+  const hit = cacheHitRate();
+  const phase = phaseOf();
   const payload = {
     v: 1,
     ts: now,
@@ -122,6 +205,20 @@ function buildBreathPayload(): string {
     cost: Math.round(live.totalCost * 10000) / 10000,
     curve: live.curve.slice(-CURVE_CAP),
     ticks: live.ticks.slice(-EVENT_TICK_CAP),
+    // ── 解读层（派生量，全部可回算到上面的原始计数） ──
+    avgTps: avg === undefined ? null : Math.round(avg * 10) / 10,
+    rateQuality: rateQuality(),
+    rateGrade: grade.key,
+    rateGradeLabel: grade.label,
+    cacheHitRate: hit === undefined ? null : Math.round(hit * 1000) / 1000,
+    cacheRead: live.cacheRead,
+    cacheWrite: live.cacheWrite,
+    uncachedInput: live.uncachedInput,
+    phase: phase.key,
+    phaseLabel: phase.label,
+    phaseDetail: phase.detail,
+    phaseIndex: phase.index,
+    jingxiVersion: "1.0.4-pi-native",
     textLines: lines,
   };
   return `JINGXI_V1:${JSON.stringify(payload)}`;
@@ -138,6 +235,16 @@ function buildBreathLines(): string[] {
   lines.push(`· 轮次/步数   ${live.turns} 轮 · ${live.toolSteps} 步 · 本 Turn ${live.turnTools} 工具`);
   lines.push(`· 出词速度    ${tps} tok/s · 成本 $${round2(live.totalCost)}`);
   lines.push(`· 异常/重试   ${live.errors} 异常 · ${live.compactions} 次压缩`);
+  // 解读层（速度分级 / 缓存命中 / 呼吸阶段）
+  const avg = averageTps();
+  const grade = rateGrade(avg);
+  const hit = cacheHitRate();
+  const phase = phaseOf();
+  const hitText = hit === undefined ? "无数据" : `${Math.round(hit * 100)}%`;
+  const avgText = avg === undefined ? "无数据" : `${Math.round(avg * 10) / 10} tok/s`;
+  lines.push(`· 呼吸阶段    ${phase.label} — ${phase.detail}`);
+  lines.push(`· 速度分级    ${grade.label}（均速 ${avgText} · ${rateQuality() === "estimated" ? "估算" : "无数据"}）`);
+  lines.push(`· 缓存命中    ${hitText}  (read ${live.cacheRead.toLocaleString()} / write ${live.cacheWrite.toLocaleString()})`);
   // 呼吸曲线（真实点，样本不足时不伪造）
   if (live.curve.length >= 2) {
     const max = Math.max(...live.curve.map((p) => p.tokens), 1);
@@ -171,7 +278,7 @@ function persist(): void {
     mkdirSync(STATE_DIR, { recursive: true });
     const payload = {
       schema: "pgg-jingxi/breath-latest",
-      version: "1.0.2-pi-native",
+      version: "1.0.4-pi-native",
       updatedAt: new Date().toISOString(),
       sessionStartedAt: new Date(live.sessionStartedAt).toISOString(),
       turns: live.turns,
@@ -181,6 +288,18 @@ function persist(): void {
       totalInput: live.totalInput,
       totalOutput: live.totalOutput,
       totalCost: live.totalCost,
+      cacheRead: live.cacheRead,
+      cacheWrite: live.cacheWrite,
+      uncachedInput: live.uncachedInput,
+      phase: phaseOf().key,
+      phaseLabel: phaseOf().label,
+      // 解读层派生量：落盘后 /api/jingxi 才能把分级与命中率一并送出，
+      // 否则 Web 端只能拿到原始计数、显示不出解读。
+      avgTps: (() => { const a = averageTps(); return a === undefined ? null : Math.round(a * 10) / 10; })(),
+      rateQuality: rateQuality(),
+      rateGrade: rateGrade(averageTps()).key,
+      rateGradeLabel: rateGrade(averageTps()).label,
+      cacheHitRate: (() => { const h = cacheHitRate(); return h === undefined ? null : Math.round(h * 1000) / 1000; })(),
       curve: live.curve.slice(-CURVE_CAP),
       ticks: live.ticks.slice(-EVENT_TICK_CAP),
     };
@@ -200,6 +319,8 @@ function resetSession(): void {
   live.turns = 0; live.toolSteps = 0; live.errors = 0;
   live.compactions = 0; live.turnTools = 0;
   live.totalInput = 0; live.totalOutput = 0; live.totalCost = 0;
+  live.cacheRead = 0; live.cacheWrite = 0; live.uncachedInput = 0;
+  live.turnStartedAt = 0; live.turnOutputStart = 0; live.rates = [];
   live.curve = []; live.ticks = []; live.idle = true; live.lastWidgetLines = [];
 }
 
@@ -207,9 +328,13 @@ function resetSession(): void {
 function snapshot(): Record<string, unknown> {
   const lines = buildBreathLines();
   live.lastWidgetLines = lines;
+  const avg = averageTps();
+  const grade = rateGrade(avg);
+  const hit = cacheHitRate();
+  const phase = phaseOf();
   return {
     ok: true,
-    jingxiVersion: "1.0.2-pi-native",
+    jingxiVersion: "1.0.4-pi-native",
     sessions: { since: live.sessionStartedAt, turns: live.turns },
     metrics: {
       totalTokens: live.totalInput + live.totalOutput,
@@ -219,6 +344,18 @@ function snapshot(): Record<string, unknown> {
       errors: live.errors,
       compactions: live.compactions,
       costTotal: Math.round(live.totalCost * 10000) / 10000,
+    },
+    // 解读层：速度分级 / 缓存命中 / 呼吸阶段。
+    // rateQuality 明确标注数值可信度，禁止把估算值当实时值对外表述。
+    interpretation: {
+      avgTps: avg === undefined ? null : Math.round(avg * 10) / 10,
+      rateQuality: rateQuality(),
+      rateGrade: grade.key,
+      rateGradeLabel: grade.label,
+      cacheHitRate: hit === undefined ? null : Math.round(hit * 1000) / 1000,
+      phase: phase.key,
+      phaseLabel: phase.label,
+      phaseDetail: phase.detail,
     },
     curvePoints: live.curve.length,
     tickKinds: live.ticks.map((t) => t.kind),
@@ -253,23 +390,38 @@ export default function pggJingxi(pi: ExtensionAPI): void {
     live.turns += 1;
     live.turnTools = 0;
     live.idle = false;
+    live.turnStartedAt = Date.now();
+    live.turnOutputStart = live.totalOutput;
   });
   pi.on("turn_end", (_e: any, ctx: any) => {
+    // 结算本 Turn 估算速度：output 增量 / 轮次耗时。
+    // 无耗时或零增量时不记点——宁缺勿造，速度档位会据此标「无数据」。
+    const started = live.turnStartedAt > 0 ? live.turnStartedAt : live.sessionStartedAt;
+    const elapsed = Date.now() - started;
+    const delta = live.totalOutput - live.turnOutputStart;
+    if (elapsed >= 250 && delta > 0) {
+      const rate = delta / (elapsed / 1000);
+      live.rates.push(rate);
+      if (live.rates.length > CURVE_CAP) live.rates.splice(0, live.rates.length - CURVE_CAP);
+      addCurvePoint(Math.round(rate));
+    }
     live.turnTools = 0; // 本轮工具计数并入全局后清零，供下一轮“本 Turn”使用
     live.idle = true;
     schedulePersist();
     updateWidget(ctx);
   });
 
-  // 消息（usage → token 事实）
+  // 消息（usage → token 事实 + 缓存三态）
   pi.on("message_end", (event: any, _ctx: any) => {
     if (!event?.message || event.message.role !== "assistant") return;
-    const { input, output, cost } = usageOf(event.message);
-    if (input + output + cost === 0) return;
-    live.totalInput += input;
-    live.totalOutput += output;
-    live.totalCost += cost;
-    addCurvePoint(output);
+    const u = usageOf(event.message);
+    if (u.input + u.output + u.cost === 0) return;
+    live.totalInput += u.input;
+    live.totalOutput += u.output;
+    live.totalCost += u.cost;
+    live.cacheRead += u.cacheRead;
+    live.cacheWrite += u.cacheWrite;
+    live.uncachedInput += u.uncached;
     schedulePersist();
   });
 
@@ -300,9 +452,16 @@ export default function pggJingxi(pi: ExtensionAPI): void {
       const lines = live.lastWidgetLines.length > 0
         ? live.lastWidgetLines
         : buildBreathLines();
-      ctx.ui.notify(`🐳 鲸息呼吸 · ${live.turns} 轮 · ${(s.metrics as any).totalTokens} tok · $${round2(live.totalCost)}`, "info");
+      const it = s.interpretation as {
+        phaseLabel: string; rateGradeLabel: string; cacheHitRate: number | null;
+      };
+      const hit = it.cacheHitRate === null ? "无数据" : `${Math.round(it.cacheHitRate * 100)}%`;
+      ctx.ui.notify(
+        `🐳 鲸息 · ${live.turns} 轮 · ${(s.metrics as any).totalTokens} tok · ` +
+        `$${round2(live.totalCost)} · ${it.phaseLabel} · ${it.rateGradeLabel} · 缓存 ${hit}`,
+        "info",
+      );
       ctx.ui.widgetPanel?.("jingxi", lines); // Web 面板（存在时）
-      return lines.join("\n");
     },
   });
 

@@ -17,6 +17,12 @@ function toPayload(d: any): JingxiPayload {
   const durMs = now - start;
   const out = b.totalOutput ?? 0;
   const tps = durMs > 0 ? Math.round(out / (durMs / 1000)) : 0;
+  // 缓存三态回来后才能算命中率；分母为 0 时留 null（不伪造 0%）。
+  const cacheRead = b.cacheRead ?? 0;
+  const cacheWrite = b.cacheWrite ?? 0;
+  const uncachedInput = b.uncachedInput ?? 0;
+  const denom = cacheRead + cacheWrite + uncachedInput;
+  const cacheHitRate = denom > 0 ? Math.round((cacheRead / denom) * 1000) / 1000 : null;
   return {
     v: 1, ts: now, sessionStartedAt: start, durMs, tps,
     totalTokens: b.totalTokens ?? 0, totalInput: b.totalInput ?? 0, totalOutput: out,
@@ -25,6 +31,15 @@ function toPayload(d: any): JingxiPayload {
     curve: (d.curve ?? []).map((c: any) => ({ tMs: c.tMs ?? 0, tokens: c.tokens ?? 0 })),
     ticks: (d.ticks ?? []).map((t: any) => ({ tMs: t.tMs ?? 0, kind: t.kind ?? "tool" })),
     textLines: [],
+    // 解读层（旧版扩展不提供时为 undefined/null，前端各自回落）
+    cacheRead, cacheWrite, uncachedInput, cacheHitRate,
+    phase: b.phase,
+    phaseLabel: b.phaseLabel,
+    jingxiVersion: d.version,
+    avgTps: b.avgTps ?? null,
+    rateQuality: b.rateQuality ?? "none",
+    rateGrade: b.rateGrade,
+    rateGradeLabel: b.rateGradeLabel,
   };
 }
 

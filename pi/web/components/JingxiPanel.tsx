@@ -34,6 +34,20 @@ export interface JingxiPayload {
   curve: JingxiPoint[];
   ticks: JingxiTick[];
   textLines: string[];
+  // ── 解读层（扩展 V1.0.4 起提供；旧负载缺失时为 undefined） ──
+  avgTps?: number | null;
+  rateQuality?: "exact" | "estimated" | "none";
+  rateGrade?: string;
+  rateGradeLabel?: string;
+  cacheHitRate?: number | null;
+  cacheRead?: number;
+  cacheWrite?: number;
+  uncachedInput?: number;
+  phase?: string;
+  phaseLabel?: string;
+  phaseDetail?: string;
+  phaseIndex?: number;
+  jingxiVersion?: string;
 }
 
 export const JINGXI_MARKER = "JINGXI_V1:";
@@ -76,8 +90,27 @@ const fmtCost = (c: number): string => {
 };
 
 // Breath 阶段（真实空态 + 活跃状态）
+// 扩展 V1.0.4 起在负载里给出权威 phase（六阶段模型，由真实速度/工具节点推导）；
+// 旧负载没有该字段时回落到本地粗判，保证向后兼容。
 type Phase = "idle" | "breath" | "cruise" | "peak" | "turbulence";
 function phaseOf(p: JingxiPayload): Phase {
+  if (p.phase) {
+    switch (p.phase) {
+      case "turbulence":
+        return "turbulence";
+      case "cruise":
+        return "cruise";
+      case "acceleration":
+        return "peak";
+      case "landing":
+      case "done":
+        return "cruise";
+      case "ignition":
+        return p.turns === 0 ? "idle" : "breath";
+      default:
+        break;
+    }
+  }
   if (p.errors > 0) return "turbulence";
   if (p.turns === 0) return "idle";
   if (p.tps >= 30) return "peak";
@@ -92,12 +125,18 @@ const PHASE_META: Record<Phase, { label: string; color: string }> = {
   turbulence: { label: "湍流", color: "var(--jx-error)" },
 };
 
+// 阶段圆点动效开关：仅在真正活跃（非静默）时呼吸，静态时不动。
+function phaseIsActive(phase: Phase): boolean {
+  return phase === "breath" || phase === "peak";
+}
+
 // ── 事实卡 ────────────────────────────────────────────────────────────────
 const FACTS = [
   { key: "tokens", label: "Token 总量", icon: "◎", color: "var(--jx-primary)" },
   { key: "duration", label: "会话时长", icon: "◷", color: "var(--jx-model)" },
   { key: "turns", label: "轮次 / 步数", icon: "◉", color: "var(--jx-tool)" },
   { key: "speed", label: "出词速度", icon: "≈", color: "var(--jx-input)" },
+  { key: "cache", label: "缓存命中", icon: "◈", color: "var(--jx-primary)" },
   { key: "health", label: "异常 / 重试", icon: "△", color: "var(--jx-error)" },
 ] as const;
 
@@ -106,11 +145,30 @@ function factValue(p: JingxiPayload, key: string): { value: string; sub: string;
     case "tokens":
       return { value: fmtNum(p.totalTokens), sub: `in ${fmtNum(p.totalInput)} · out ${fmtNum(p.totalOutput)}` };
     case "duration":
-      return { value: fmtMs(p.durMs), sub: `本会话 $${fmtCost(p.cost)}` };
+      return { value: fmtMs(p.durMs), sub: `本会话 ${fmtCost(p.cost)}` };
     case "turns":
       return { value: `${p.turns}`, sub: `${p.toolSteps} 步 · 当前 Turn ${p.turnTools} 工具` };
-    case "speed":
-      return { value: `${p.tps} tok/s`, sub: p.tps >= 30 ? "峰值涌动" : p.tps > 0 ? "巡航中" : "空态", tone: p.tps >= 30 ? "success" : "brand" };
+    case "speed": {
+      // 优先用解读层的分级（扩展 V1.0.4）；缺失时回落到本地阈值。
+      // 速度质量非「估算」时不标实时，避免把估算值说成实时值。
+      const label = p.rateGradeLabel ?? (p.tps >= 30 ? "涌动" : p.tps > 0 ? "巡航" : "空态");
+      const avg = p.avgTps ?? null;
+      const quality = p.rateQuality === "estimated" ? "估算" : p.rateQuality === "exact" ? "实时" : "无数据";
+      return {
+        value: label,
+        sub: avg === null ? `${p.tps} tok/s · ${quality}` : `均速 ${avg} tok/s · ${quality}`,
+        tone: label === "疾涌" || label === "涌动" ? "success" : "brand",
+      };
+    }
+    case "cache": {
+      // 缓存命中率：分母为 0（无缓存活动）时显示「无数据」，不显示 0%。
+      const rate = p.cacheHitRate ?? null;
+      return {
+        value: rate === null ? "无数据" : `${Math.round(rate * 100)}%`,
+        sub: `read ${fmtNum(p.cacheRead ?? 0)} · write ${fmtNum(p.cacheWrite ?? 0)}`,
+        tone: rate === null ? undefined : rate >= 0.5 ? "success" : "brand",
+      };
+    }
     case "health":
       return { value: `${p.errors}`, sub: `${p.compactions} 次压缩`, tone: p.errors > 0 ? "error" : "success" };
     default:
@@ -250,9 +308,9 @@ export function JingxiPanel({ payload }: { payload: JingxiPayload }) {
           <span className="jx-title">鲸息</span>
           <span className="jx-subtitle">Pi 呼吸遥测 · 只读</span>
         </div>
-        <span className="jx-phase-dot" style={{ background: meta.color }} />
-        <span className="jx-phase-label" style={{ color: meta.color }}>{meta.label}</span>
-        <span className="jx-version">v1.0.2</span>
+        <span className="jx-phase-dot" data-state={phaseIsActive(phase) ? "active" : "static"} style={{ background: meta.color }} />
+        <span className="jx-phase-label" style={{ color: meta.color }}>{payload.phaseLabel ?? meta.label}</span>
+        <span className="jx-version">v{(payload.jingxiVersion ?? "1.0.2").replace(/^(\d+\.\d+\.\d+).*$/, "$1")}</span>
       </div>
 
       {/* 五张事实卡 */}
