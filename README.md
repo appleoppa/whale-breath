@@ -35,6 +35,10 @@
   「节奏 → 量级 → 健康」重排、文案全面中文化打磨（多专家评审驱动）。
 - **V1.0.4 设计体系版**：像素级细节精炼（间距/字阶/焦点反馈归位）、
   《[鲸息设计规范](docs/DESIGN.md)》发布、横幅换「呼吸曲线」极简意象。
+- **遥测接通修复**：DSH 的增量块内嵌在 `assistant/message.stream`，插件此前只认
+  独立的 `assistant/chunk` 事件，导致首 token 时刻恒为 undefined，速率/曲线/Token
+  全部 `unavailable`。现已从 stream 还原逐块时间锚点，速率、TTFT、Cache 命中与
+  呼吸曲线恢复为真实值。
 
 ## 🖼️ 实机界面
 
@@ -145,7 +149,8 @@ Native by default（视觉归属感交给宿主）。完整设计规范见 **[do
 node --test "test/*.test.mjs"
 ```
 
-当前基线：**220/220 通过**（Node 22 / 24，GitHub Actions 矩阵自动运行，见 CI 徽章）。
+当前基线：**227 通过 / 0 失败**（228 项，1 项 Windows 专属用例在 macOS 跳过；
+Node 22 / 24，GitHub Actions 矩阵自动运行，见 CI 徽章）。
 测试 harness 用 `node:vm` 加载 `client.js`，配合自实现的 React shim 做组件级断言；
 CLI home 与 Desktop harness home 两种部署形态均同步验证通过。
 
@@ -155,6 +160,7 @@ CLI home 与 Desktop harness home 两种部署形态均同步验证通过。
 - [x] **V1.0.2 可靠修复版** —— 安装/更新重写、会话切换修复、刷新状态机、后端默认只读、CI
 - [x] **V1.0.3 视觉优化版** —— 空态/顶栏破版修复、事故 token 归零、事实卡重排、文案中文打磨
 - [x] **V1.0.4 设计体系版** —— 像素级精炼、《鲸息设计规范》发布、「呼吸曲线」横幅
+- [x] **遥测接通修复** —— 从 `assistant/message.stream` 还原逐块时间锚点，遥测不再恒空
 - [ ] 受控更新通道（`jingxiOps` 已预留开关）
 - [ ] Perfect Breath 分享（share 层已预留）
 - [ ] 更多轨迹解读维度
